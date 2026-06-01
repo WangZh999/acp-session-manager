@@ -1,0 +1,50 @@
+{
+  "id": "acp-session-manager",
+  "name": "ACP Session Manager",
+  "description": "Manage ACP sub-sessions lifecycle, mid-turn intervention, and approval surfacing.",
+  "activation": {
+    "onStartup": true
+  },
+  "enabledByDefault": true,
+  "contracts": {
+    "tools": ["acp_launch", "acp_list", "acp_send", "acp_cancel", "acp_config", "acp_close", "acp_approve"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "maxSessions": {
+        "type": "number",
+        "minimum": 1,
+        "default": 50,
+        "description": "Maximum number of concurrent managed ACP sessions."
+      },
+      "sessionTtlHours": {
+        "type": "number",
+        "minimum": 1,
+        "default": 24,
+        "description": "Session time-to-live in hours before automatic cleanup."
+      },
+      "approvalTimeoutMs": {
+        "type": "number",
+        "minimum": 10000,
+        "default": 300000,
+        "description": "Default timeout in milliseconds for approval requests."
+      }
+    }
+  },
+  "uiHints": {
+    "maxSessions": {
+      "label": "Max Sessions",
+      "help": "Maximum number of concurrent ACP sub-sessions."
+    },
+    "sessionTtlHours": {
+      "label": "Session TTL (hours)",
+      "help": "Sessions inactive for longer than this are automatically cleaned up."
+    },
+    "approvalTimeoutMs": {
+      "label": "Approval Timeout (ms)",
+      "help": "How long to wait for an approval decision before auto-rejecting."
+    }
+  }
+}
