@@ -1,7 +1,7 @@
 {
   "name": "@ac/acp-session-manager",
-  "version": "0.2.0",
-  "description": "OpenClaw Plugin for ACP session management with approval surfacing",
+  "version": "0.3.0",
+  "description": "OpenClaw Plugin for ACP session management with direct acpx integration and approval surfacing",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "2": "^3.0.0",
-    "@sinclair/typebox": "^0.32.0"
+    "@sinclair/typebox": "^0.32.0",
+    "acpx": "^0.10.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

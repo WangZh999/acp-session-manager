@@ -1,45 +1,24 @@
 /**
  * ACP Session Manager - Core Types
  *
- * 定义 Plugin 管理的 ACP 会话相关的所有核心类型。
+ * 使用 acpx/runtime 的标准类型，仅定义 Plugin 管理层的扩展类型。
  */
 
-// ============================================================
-// ACP Runtime Types (从 openclaw 引用的外部类型)
-// ============================================================
+import type {
+  AcpRuntimeHandle as _AcpRuntimeHandle,
+  AcpRuntimeEvent as _AcpRuntimeEvent,
+  AcpRuntimeTurnResult as _AcpRuntimeTurnResult,
+  AcpRuntimeTurn as _AcpRuntimeTurn,
+  AcpPermissionRequest as _AcpPermissionRequest,
+  AcpPermissionDecision as _AcpPermissionDecision,
+} from "acpx/runtime";
 
-/** ACP Runtime Handle - 代表一个已建立的 ACP 会话连接 */
-export type AcpRuntimeHandle = {
-  sessionKey: string;
-  backend: string;
-  runtimeSessionName: string;
-  cwd?: string;
-  acpxRecordId?: string;
-  backendSessionId?: string;
-  agentSessionId?: string;
-};
-
-/** ACP Runtime 事件类型 */
-export type AcpRuntimeEvent =
-  | { type: "text_delta"; text: string; stream?: "output" | "thought"; tag?: string }
-  | { type: "status"; text: string; used?: number; size?: number }
-  | { type: "tool_call"; text: string; toolCallId?: string; status?: string; title?: string }
-  | { type: "done"; stopReason?: string }
-  | { type: "error"; message: string; code?: string; detailCode?: string; retryable?: boolean };
-
-/** ACP Runtime Turn 结果 */
-export type AcpRuntimeTurnResult =
-  | { status: "completed"; stopReason?: string }
-  | { status: "cancelled"; stopReason?: string }
-  | { status: "failed"; error: { message: string; code?: string } };
-
-/** ACP Runtime Turn 对象 */
-export type AcpRuntimeTurn = {
-  readonly requestId: string;
-  readonly events: AsyncIterable<AcpRuntimeEvent>;
-  readonly result: Promise<AcpRuntimeTurnResult>;
-  cancel(input?: { reason?: string }): Promise<void>;
-};
+export type AcpRuntimeHandle = _AcpRuntimeHandle;
+export type AcpRuntimeEvent = _AcpRuntimeEvent;
+export type AcpRuntimeTurnResult = _AcpRuntimeTurnResult;
+export type AcpRuntimeTurn = _AcpRuntimeTurn;
+export type AcpPermissionRequest = _AcpPermissionRequest;
+export type AcpPermissionDecision = _AcpPermissionDecision;
 
 // ============================================================
 // Managed Session Types
