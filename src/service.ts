@@ -38,7 +38,7 @@ export type AcpSessionManagerConfig = {
   cwd?: string;
   stateDir?: string;
   permissionMode?: "approve-all" | "approve-reads" | "deny-all";
-  agents?: Record<string, string>;
+  agents?: Record<string, string | { command: string; args?: string[] }>;
 };
 
 export class AcpSessionManagerService {
@@ -78,10 +78,21 @@ export class AcpSessionManagerService {
     const cwd = this.runtimeConfig.cwd || process.cwd();
     const stateDir = this.runtimeConfig.stateDir || `${cwd}/.acp-sessions`;
 
+    const rawAgents = this.runtimeConfig.agents ?? { qoder: "qodercli --acp" };
+    const agents: Record<string, string> = {};
+    for (const [name, val] of Object.entries(rawAgents)) {
+      if (typeof val === "string") {
+        agents[name] = val;
+      } else if (val && typeof val === "object" && "command" in val) {
+        const obj = val as { command: string; args?: string[] };
+        agents[name] = obj.args ? `${obj.command} ${obj.args.join(" ")}` : obj.command;
+      }
+    }
+
     const options: AcpRuntimeOptions = {
       cwd,
       sessionStore: createFileSessionStore({ stateDir }),
-      agentRegistry: createAgentRegistry({ overrides: this.runtimeConfig.agents }),
+      agentRegistry: createAgentRegistry({ overrides: agents }),
       permissionMode: this.runtimeConfig.permissionMode || "approve-reads",
       nonInteractivePermissions: "deny",
       onPermissionRequest: async (req, ctx) => {

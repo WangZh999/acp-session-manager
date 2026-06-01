@@ -12,7 +12,6 @@
     "prepack": "npm run clean && npm run build"
   },
   "dependencies": {
-    "2": "^3.0.0",
     "@sinclair/typebox": "^0.32.0",
     "acpx": "^0.10.0"
   },
