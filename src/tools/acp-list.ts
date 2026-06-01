@@ -64,6 +64,14 @@ export function createAcpListTool(_ctx: PluginToolContextLike) {
             createdAt: s.createdAt,
             lastActiveAt: s.lastActiveAt,
             pendingApprovalsCount: s.pendingApprovals.length,
+            pendingApprovals: s.pendingApprovals.length > 0
+              ? s.pendingApprovals.map((a) => ({
+                  approvalId: a.approvalId,
+                  title: a.title,
+                  description: a.description,
+                  toolName: a.toolName,
+                }))
+              : undefined,
             stopReason: s.lastStopReason,
             error: s.error,
           })),

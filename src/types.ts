@@ -28,6 +28,7 @@ export type AcpPermissionDecision = _AcpPermissionDecision;
 export type AcpSessionStatus =
   | "initializing"
   | "running"
+  | "pending_approval"
   | "completed"
   | "failed"
   | "cancelled";
@@ -67,6 +68,8 @@ export type ManagedAcpSession = {
    * 用于将子会话的审批/完成/失败事件注入回正确的主会话上下文。
    */
   parentSessionKey?: string;
+  /** Internal: signal for non-blocking approval detection */
+  _approvalSignal?: (() => void) | undefined;
 };
 
 /** 工具调用记录 */

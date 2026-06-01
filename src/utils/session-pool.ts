@@ -90,6 +90,7 @@ export function sortSessionsByActivity(
 ): ManagedAcpSession[] {
   const statusPriority: Record<AcpSessionStatus, number> = {
     running: 0,
+    pending_approval: 0,
     initializing: 1,
     completed: 2,
     failed: 3,

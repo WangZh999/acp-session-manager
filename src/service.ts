@@ -3,6 +3,10 @@
  *
  * 核心服务层：直接集成 acpx runtime，会话池管理、审批队列。
  * 通过 onPermissionRequest 回调拦截权限请求，实现审批透出。
+ *
+ * 关键设计：turn 执行为非阻塞模式。当 permission request 到达时，
+ * executeTurn 立即返回 pending_approval 状态，turn 在后台挂起等待决策。
+ * 调用者可通过 acp_approve 解决审批，turn 自动恢复执行。
  */
 
 import {
@@ -13,6 +17,7 @@ import {
   type AcpRuntimeOptions,
   type AcpRuntimeHandle,
   type AcpRuntimeEvent,
+  type AcpRuntimeTurn,
   type AcpPermissionRequest,
   type AcpPermissionDecision,
 } from "acpx/runtime";
@@ -47,6 +52,7 @@ export class AcpSessionManagerService {
   private eventCallbacks: ServiceEventCallback[] = [];
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private started = false;
+  private activeTurns = new Map<string, { turn: AcpRuntimeTurn; collecting: Promise<void> }>();
 
   private maxSessions = 50;
   private sessionTtlMs = 24 * 60 * 60 * 1000;
@@ -71,7 +77,6 @@ export class AcpSessionManagerService {
     return this.approvalTimeoutMs;
   }
 
-  /** 直接使用 acpx createAcpRuntime 初始化，带 onPermissionRequest */
   start(): void {
     if (this.started) return;
 
@@ -113,9 +118,11 @@ export class AcpSessionManagerService {
       clearInterval(this.cleanupTimer);
       this.cleanupTimer = null;
     }
-    const activeSessions = [...this.sessions.values()].filter(
-      (s) => s.status === "running",
-    );
+    for (const [, entry] of this.activeTurns) {
+      entry.turn.cancel({ reason: "service_shutdown" }).catch(() => {});
+    }
+    this.activeTurns.clear();
+    const activeSessions = [...this.sessions.values()].filter((s) => s.status === "running");
     await Promise.allSettled(
       activeSessions.map((s) => this.closeSession(s.sessionId, "service_shutdown")),
     );
@@ -175,6 +182,11 @@ export class AcpSessionManagerService {
 
   async sendMessage(sessionId: string, message: string): Promise<TurnResult> {
     const session = this.getSessionOrThrow(sessionId);
+    if (session.status === "pending_approval") {
+      throw new Error(
+        `Session ${sessionId} is waiting for approval. Use acp_approve to resolve pending approvals first.`,
+      );
+    }
     if (session.status !== "running") {
       throw new Error(`Session ${sessionId} is not active (status: ${session.status})`);
     }
@@ -184,6 +196,11 @@ export class AcpSessionManagerService {
   async cancelSession(sessionId: string, reason?: string): Promise<void> {
     const session = this.getSessionOrThrow(sessionId);
     if (!this.runtime) throw new Error("Service not started");
+    const activeTurn = this.activeTurns.get(sessionId);
+    if (activeTurn) {
+      await activeTurn.turn.cancel({ reason });
+      this.activeTurns.delete(sessionId);
+    }
     await this.runtime.cancel({ handle: session.handle, reason });
     session.status = "cancelled";
     session.lastActiveAt = Date.now();
@@ -193,6 +210,11 @@ export class AcpSessionManagerService {
   async closeSession(sessionId: string, reason?: string): Promise<void> {
     const session = this.getSessionOrThrow(sessionId);
     if (!this.runtime) throw new Error("Service not started");
+    const activeTurn = this.activeTurns.get(sessionId);
+    if (activeTurn) {
+      await activeTurn.turn.cancel({ reason: "closing" }).catch(() => {});
+      this.activeTurns.delete(sessionId);
+    }
     try {
       await this.runtime.close({ handle: session.handle, reason: reason || "user_requested" });
     } catch { /* ignore */ }
@@ -227,7 +249,12 @@ export class AcpSessionManagerService {
     const session = this.sessions.get(approval.sessionId);
     if (session) {
       session.pendingApprovals.push(approval);
+      session.status = "pending_approval";
       session.lastActiveAt = Date.now();
+      if (session._approvalSignal) {
+        session._approvalSignal();
+        session._approvalSignal = undefined;
+      }
       this.emitEvent({ type: "approval_requested", sessionId: approval.sessionId, approval });
     }
   }
@@ -241,6 +268,9 @@ export class AcpSessionManagerService {
     if (approval.resolve) approval.resolve(decision);
     session.pendingApprovals.splice(idx, 1);
     session.lastActiveAt = Date.now();
+    if (session.pendingApprovals.length === 0 && session.status === "pending_approval") {
+      session.status = "running";
+    }
     this.emitEvent({ type: "approval_resolved", sessionId, approvalId, decision });
     return true;
   }
@@ -335,65 +365,102 @@ export class AcpSessionManagerService {
     }
   }
 
-  private async executeTurn(sessionId: string, text: string): Promise<TurnResult> {
+  /**
+   * 执行 turn — 非阻塞模式。
+   *
+   * 启动 turn 后在后台收集事件。同时通过 approvalArrived Promise 监听
+   * permission request 的到来。两者 race：
+   * - turn 正常完成 → 返回 completed/failed/cancelled
+   * - permission request 到来 → 立即返回 pending_approval，turn 在后台挂起
+   */
+  private executeTurn(sessionId: string, text: string): Promise<TurnResult> {
     const session = this.getSessionOrThrow(sessionId);
     if (!this.runtime) throw new Error("Service not started");
 
     const requestId = `turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-    try {
-      const turn = this.runtime.startTurn({
-        handle: session.handle,
-        text,
-        mode: "prompt",
-        requestId,
-      });
+    const turn = this.runtime.startTurn({
+      handle: session.handle,
+      text,
+      mode: "prompt",
+      requestId,
+    });
 
-      for await (const event of turn.events) {
-        switch (event.type) {
-          case "text_delta":
-            session.output += event.text;
-            break;
-          case "tool_call":
-            session.toolCalls.push({
-              toolCallId: event.toolCallId || requestId,
-              toolName: event.text,
-              title: event.title,
-              status: event.status,
-              timestamp: Date.now(),
-            });
-            break;
-          default:
-            break;
+    let approvalSignalResolve: (() => void) | undefined;
+    const approvalArrived = new Promise<void>((resolve) => {
+      approvalSignalResolve = resolve;
+    });
+    session._approvalSignal = approvalSignalResolve;
+
+    const turnCompleted = new Promise<TurnResult>((resolve) => {
+      const collectEvents = async () => {
+        try {
+          for await (const event of turn.events) {
+            switch (event.type) {
+              case "text_delta":
+                session.output += event.text;
+                break;
+              case "tool_call":
+                session.toolCalls.push({
+                  toolCallId: event.toolCallId || requestId,
+                  toolName: event.text,
+                  title: event.title,
+                  status: event.status,
+                  timestamp: Date.now(),
+                });
+                break;
+              default:
+                break;
+            }
+          }
+
+          const result = await turn.result;
+          session.lastActiveAt = Date.now();
+          this.activeTurns.delete(sessionId);
+          session._approvalSignal = undefined;
+
+          if (result.status === "completed") {
+            session.lastStopReason = result.stopReason;
+            session.status = session.mode === "session" ? "running" : "completed";
+            this.emitEvent({ type: "session_completed", sessionId, output: session.output });
+            resolve({ status: "completed", output: session.output, stopReason: result.stopReason });
+          } else if (result.status === "failed") {
+            session.status = "failed";
+            session.error = result.error.message;
+            this.emitEvent({ type: "session_failed", sessionId, error: result.error.message });
+            resolve({ status: "failed", error: result.error.message });
+          } else {
+            session.status = "cancelled";
+            this.emitEvent({ type: "session_cancelled", sessionId });
+            resolve({ status: "cancelled" });
+          }
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          session.status = "failed";
+          session.error = errorMsg;
+          session.lastActiveAt = Date.now();
+          this.activeTurns.delete(sessionId);
+          session._approvalSignal = undefined;
+          this.emitEvent({ type: "session_failed", sessionId, error: errorMsg });
+          resolve({ status: "failed", error: errorMsg });
         }
-      }
+      };
 
-      const result = await turn.result;
-      session.lastActiveAt = Date.now();
+      const collecting = collectEvents();
+      this.activeTurns.set(sessionId, { turn, collecting });
+    });
 
-      if (result.status === "completed") {
-        session.lastStopReason = result.stopReason;
-        session.status = session.mode === "session" ? "running" : "completed";
-        this.emitEvent({ type: "session_completed", sessionId, output: session.output });
-        return { status: "completed", output: session.output, stopReason: result.stopReason };
-      } else if (result.status === "failed") {
-        session.status = "failed";
-        session.error = result.error.message;
-        this.emitEvent({ type: "session_failed", sessionId, error: result.error.message });
-        return { status: "failed", error: result.error.message };
-      } else {
-        session.status = "cancelled";
-        this.emitEvent({ type: "session_cancelled", sessionId });
-        return { status: "cancelled" };
-      }
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      session.status = "failed";
-      session.error = errorMsg;
-      session.lastActiveAt = Date.now();
-      this.emitEvent({ type: "session_failed", sessionId, error: errorMsg });
-      return { status: "failed", error: errorMsg };
-    }
+    return Promise.race([
+      turnCompleted,
+      approvalArrived.then((): TurnResult => {
+        const firstApproval = session.pendingApprovals[0];
+        return {
+          status: "pending_approval",
+          output: session.output,
+          pendingApprovalId: firstApproval?.approvalId,
+        };
+      }),
+    ]);
   }
 
   private getSessionOrThrow(sessionId: string): ManagedAcpSession {
@@ -406,6 +473,11 @@ export class AcpSessionManagerService {
     const now = Date.now();
     for (const [id, session] of this.sessions) {
       if (now - session.lastActiveAt > this.sessionTtlMs) {
+        const activeTurn = this.activeTurns.get(id);
+        if (activeTurn) {
+          await activeTurn.turn.cancel({ reason: "ttl_expired" }).catch(() => {});
+          this.activeTurns.delete(id);
+        }
         if (this.runtime) {
           try {
             await this.runtime.close({ handle: session.handle, reason: "ttl_expired" });
