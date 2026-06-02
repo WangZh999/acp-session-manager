@@ -34,6 +34,20 @@ import type {
 
 export type { AcpRuntime };
 
+const LOG_PREFIX = "[acp-sm]";
+
+function log(...args: unknown[]): void {
+  console.log(LOG_PREFIX, new Date().toISOString(), ...args);
+}
+
+function logWarn(...args: unknown[]): void {
+  console.warn(LOG_PREFIX, new Date().toISOString(), ...args);
+}
+
+function logError(...args: unknown[]): void {
+  console.error(LOG_PREFIX, new Date().toISOString(), ...args);
+}
+
 export type ServiceEventCallback = (event: SessionEvent) => void;
 
 export type AcpSessionManagerConfig = {
@@ -61,6 +75,7 @@ export class AcpSessionManagerService {
 
   configure(config: AcpSessionManagerConfig | undefined | null): void {
     if (!config) return;
+    log("configure:", JSON.stringify(config));
     if (typeof config.maxSessions === "number" && config.maxSessions > 0) {
       this.maxSessions = Math.floor(config.maxSessions);
     }
@@ -94,6 +109,9 @@ export class AcpSessionManagerService {
       }
     }
 
+    log("start: cwd=" + cwd, "stateDir=" + stateDir, "permissionMode=" + (this.runtimeConfig.permissionMode || "approve-reads"));
+    log("start: agents:", JSON.stringify(agents));
+
     const options: AcpRuntimeOptions = {
       cwd,
       sessionStore: createFileSessionStore({ stateDir }),
@@ -106,6 +124,7 @@ export class AcpSessionManagerService {
     };
 
     this.runtime = createAcpRuntime(options);
+    log("start: runtime created successfully");
 
     if (!this.cleanupTimer) {
       this.cleanupTimer = setInterval(() => this.cleanupExpiredSessions(), 60_000);
@@ -114,6 +133,7 @@ export class AcpSessionManagerService {
   }
 
   async stop(): Promise<void> {
+    log("stop: shutting down, active sessions:", this.sessions.size, "active turns:", this.activeTurns.size);
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);
       this.cleanupTimer = null;
@@ -128,6 +148,7 @@ export class AcpSessionManagerService {
     );
     this.sessions.clear();
     this.started = false;
+    log("stop: complete");
   }
 
   onEvent(callback: ServiceEventCallback): void {
@@ -135,6 +156,7 @@ export class AcpSessionManagerService {
   }
 
   async launchSession(params: AcpSessionLaunchParams): Promise<ManagedAcpSession> {
+    log("launchSession:", JSON.stringify({ agentId: params.agentId, task: params.task.slice(0, 100), mode: params.mode, cwd: params.cwd }));
     this.start();
     if (!this.runtime) throw new Error("Runtime unavailable");
     if (!params.agentId?.trim()) {
@@ -149,6 +171,7 @@ export class AcpSessionManagerService {
 
     const sessionId = generateSessionId();
     const sessionKey = `acp-manager:${params.agentId}:${sessionId}`;
+    log("launchSession: ensureSession sessionKey=" + sessionKey, "agent=" + params.agentId, "mode=" + (params.mode === "session" ? "persistent" : "oneshot"));
 
     const handle = await this.runtime.ensureSession({
       sessionKey,
@@ -156,6 +179,7 @@ export class AcpSessionManagerService {
       mode: params.mode === "session" ? "persistent" : "oneshot",
       ...(params.cwd ? { cwd: params.cwd } : {}),
     });
+    log("launchSession: session ensured, handle:", JSON.stringify({ sessionKey: handle.sessionKey, backend: handle.backend, acpxRecordId: handle.acpxRecordId }));
 
     const session: ManagedAcpSession = {
       sessionId,
@@ -175,14 +199,19 @@ export class AcpSessionManagerService {
 
     this.sessions.set(sessionId, session);
     this.emitEvent({ type: "session_created", sessionId, agentId: params.agentId });
+    log("launchSession: executing first turn for", sessionId);
 
     await this.executeTurn(sessionId, params.task);
-    return this.sessions.get(sessionId) ?? session;
+    const finalSession = this.sessions.get(sessionId) ?? session;
+    log("launchSession: done, sessionId=" + sessionId, "status=" + finalSession.status, "pendingApprovals=" + finalSession.pendingApprovals.length);
+    return finalSession;
   }
 
   async sendMessage(sessionId: string, message: string): Promise<TurnResult> {
+    log("sendMessage:", sessionId, "message=" + message.slice(0, 100));
     const session = this.getSessionOrThrow(sessionId);
     if (session.status === "pending_approval") {
+      logWarn("sendMessage: blocked, session", sessionId, "is pending_approval");
       throw new Error(
         `Session ${sessionId} is waiting for approval. Use acp_approve to resolve pending approvals first.`,
       );
@@ -194,10 +223,12 @@ export class AcpSessionManagerService {
   }
 
   async cancelSession(sessionId: string, reason?: string): Promise<void> {
+    log("cancelSession:", sessionId, "reason=" + (reason || "none"));
     const session = this.getSessionOrThrow(sessionId);
     if (!this.runtime) throw new Error("Service not started");
     const activeTurn = this.activeTurns.get(sessionId);
     if (activeTurn) {
+      log("cancelSession: cancelling active turn for", sessionId);
       await activeTurn.turn.cancel({ reason });
       this.activeTurns.delete(sessionId);
     }
@@ -205,9 +236,11 @@ export class AcpSessionManagerService {
     session.status = "cancelled";
     session.lastActiveAt = Date.now();
     this.emitEvent({ type: "session_cancelled", sessionId });
+    log("cancelSession: done", sessionId);
   }
 
   async closeSession(sessionId: string, reason?: string): Promise<void> {
+    log("closeSession:", sessionId, "reason=" + (reason || "user_requested"));
     const session = this.getSessionOrThrow(sessionId);
     if (!this.runtime) throw new Error("Service not started");
     const activeTurn = this.activeTurns.get(sessionId);
@@ -221,9 +254,11 @@ export class AcpSessionManagerService {
     session.status = "completed";
     session.lastActiveAt = Date.now();
     this.sessions.delete(sessionId);
+    log("closeSession: done", sessionId);
   }
 
   async setConfig(sessionId: string, key: string, value: string): Promise<void> {
+    log("setConfig:", sessionId, key + "=" + value);
     const session = this.getSessionOrThrow(sessionId);
     if (!this.runtime?.setConfigOption) {
       throw new Error("Runtime does not support setConfigOption");
@@ -238,6 +273,7 @@ export class AcpSessionManagerService {
     if (filter?.status) {
       sessions = sessions.filter((s) => s.status === filter.status);
     }
+    log("listSessions: filter=" + JSON.stringify(filter), "count=" + sessions.length);
     return sessions;
   }
 
@@ -251,25 +287,40 @@ export class AcpSessionManagerService {
       session.pendingApprovals.push(approval);
       session.status = "pending_approval";
       session.lastActiveAt = Date.now();
+      log("addPendingApproval: sessionId=" + approval.sessionId, "approvalId=" + approval.approvalId, "title=" + approval.title, "toolName=" + (approval.toolName || "unknown"));
       if (session._approvalSignal) {
+        log("addPendingApproval: firing _approvalSignal to unblock executeTurn");
         session._approvalSignal();
         session._approvalSignal = undefined;
       }
       this.emitEvent({ type: "approval_requested", sessionId: approval.sessionId, approval });
+    } else {
+      logWarn("addPendingApproval: session not found for", approval.sessionId);
     }
   }
 
   resolveApproval(sessionId: string, approvalId: string, decision: ApprovalDecision): boolean {
+    log("resolveApproval:", sessionId, "approvalId=" + approvalId, "decision=" + decision);
     const session = this.sessions.get(sessionId);
-    if (!session) return false;
+    if (!session) {
+      logWarn("resolveApproval: session not found", sessionId);
+      return false;
+    }
     const idx = session.pendingApprovals.findIndex((a) => a.approvalId === approvalId);
-    if (idx === -1) return false;
+    if (idx === -1) {
+      logWarn("resolveApproval: approval not found", approvalId, "in session", sessionId);
+      return false;
+    }
     const approval = session.pendingApprovals[idx]!;
-    if (approval.resolve) approval.resolve(decision);
+    if (approval.resolve) {
+      log("resolveApproval: calling resolver callback, decision=" + decision);
+      approval.resolve(decision);
+    }
     session.pendingApprovals.splice(idx, 1);
     session.lastActiveAt = Date.now();
     if (session.pendingApprovals.length === 0 && session.status === "pending_approval") {
       session.status = "running";
+      log("resolveApproval: no more pending approvals, session status -> running");
     }
     this.emitEvent({ type: "approval_resolved", sessionId, approvalId, decision });
     return true;
@@ -289,8 +340,19 @@ export class AcpSessionManagerService {
     req: AcpPermissionRequest,
     ctx: { signal: AbortSignal },
   ): Promise<AcpPermissionDecision | undefined> {
+    log("handlePermissionRequest: acpSessionId=" + req.sessionId, "toolTitle=" + (req.raw.toolCall?.title || "unknown"), "kind=" + (req.inferredKind || "unknown"));
+    log("handlePermissionRequest: raw toolCall:", JSON.stringify({
+      title: req.raw.toolCall?.title,
+      kind: req.raw.toolCall?.kind,
+      rawInput: req.raw.toolCall?.rawInput,
+    }));
+
     const sessionId = this.findSessionIdByAcpSessionId(req.sessionId);
-    if (!sessionId) return undefined;
+    if (!sessionId) {
+      logWarn("handlePermissionRequest: could not find managed session for acpSessionId=" + req.sessionId);
+      return undefined;
+    }
+    log("handlePermissionRequest: mapped to managed sessionId=" + sessionId);
 
     const approvalId = `approval_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const toolTitle = req.raw.toolCall?.title || "Permission Request";
@@ -311,23 +373,29 @@ export class AcpSessionManagerService {
       timeoutMs: this.approvalTimeoutMs,
     };
 
+    log("handlePermissionRequest: created approval approvalId=" + approvalId, "timeoutMs=" + this.approvalTimeoutMs, "waiting for decision...");
+
     return new Promise<AcpPermissionDecision | undefined>((resolve) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
 
       approval.resolve = (decision: ApprovalDecision) => {
         if (timer) clearTimeout(timer);
-        resolve(this.mapDecisionToAcpDecision(decision));
+        const acpDecision = this.mapDecisionToAcpDecision(decision);
+        log("handlePermissionRequest: resolved approvalId=" + approvalId, "decision=" + decision, "-> acpOutcome=" + acpDecision.outcome);
+        resolve(acpDecision);
       };
 
       this.addPendingApproval(approval);
 
       timer = setTimeout(() => {
+        logWarn("handlePermissionRequest: TIMEOUT approvalId=" + approvalId, "after", this.approvalTimeoutMs + "ms, auto-rejecting");
         this.resolveApproval(sessionId, approvalId, "reject");
         resolve({ outcome: "reject_once" });
       }, this.approvalTimeoutMs);
 
       ctx.signal.addEventListener("abort", () => {
         if (timer) clearTimeout(timer);
+        logWarn("handlePermissionRequest: ABORTED approvalId=" + approvalId);
         this.resolveApproval(sessionId, approvalId, "cancel");
         resolve({ outcome: "cancel" });
       }, { once: true });
@@ -365,19 +433,12 @@ export class AcpSessionManagerService {
     }
   }
 
-  /**
-   * 执行 turn — 非阻塞模式。
-   *
-   * 启动 turn 后在后台收集事件。同时通过 approvalArrived Promise 监听
-   * permission request 的到来。两者 race：
-   * - turn 正常完成 → 返回 completed/failed/cancelled
-   * - permission request 到来 → 立即返回 pending_approval，turn 在后台挂起
-   */
   private executeTurn(sessionId: string, text: string): Promise<TurnResult> {
     const session = this.getSessionOrThrow(sessionId);
     if (!this.runtime) throw new Error("Service not started");
 
     const requestId = `turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    log("executeTurn: sessionId=" + sessionId, "requestId=" + requestId, "text=" + text.slice(0, 80));
 
     const turn = this.runtime.startTurn({
       handle: session.handle,
@@ -395,12 +456,15 @@ export class AcpSessionManagerService {
     const turnCompleted = new Promise<TurnResult>((resolve) => {
       const collectEvents = async () => {
         try {
+          let eventCount = 0;
           for await (const event of turn.events) {
+            eventCount++;
             switch (event.type) {
               case "text_delta":
                 session.output += event.text;
                 break;
               case "tool_call":
+                log("executeTurn: [event] tool_call:", event.title || event.text, "status=" + (event.status || "n/a"), "toolCallId=" + (event.toolCallId || "n/a"));
                 session.toolCalls.push({
                   toolCallId: event.toolCallId || requestId,
                   toolName: event.text,
@@ -409,15 +473,21 @@ export class AcpSessionManagerService {
                   timestamp: Date.now(),
                 });
                 break;
+              case "status":
+                log("executeTurn: [event] status:", (event as any).text);
+                break;
               default:
                 break;
             }
           }
+          log("executeTurn: event stream ended, total events=" + eventCount, "sessionId=" + sessionId);
 
           const result = await turn.result;
           session.lastActiveAt = Date.now();
           this.activeTurns.delete(sessionId);
           session._approvalSignal = undefined;
+
+          log("executeTurn: turn result:", JSON.stringify(result));
 
           if (result.status === "completed") {
             session.lastStopReason = result.stopReason;
@@ -427,15 +497,18 @@ export class AcpSessionManagerService {
           } else if (result.status === "failed") {
             session.status = "failed";
             session.error = result.error.message;
+            logError("executeTurn: turn FAILED:", result.error.message, "code=" + (result.error.code || "none"));
             this.emitEvent({ type: "session_failed", sessionId, error: result.error.message });
             resolve({ status: "failed", error: result.error.message });
           } else {
             session.status = "cancelled";
+            log("executeTurn: turn cancelled");
             this.emitEvent({ type: "session_cancelled", sessionId });
             resolve({ status: "cancelled" });
           }
         } catch (err) {
           const errorMsg = err instanceof Error ? err.message : String(err);
+          logError("executeTurn: EXCEPTION:", errorMsg);
           session.status = "failed";
           session.error = errorMsg;
           session.lastActiveAt = Date.now();
@@ -454,6 +527,7 @@ export class AcpSessionManagerService {
       turnCompleted,
       approvalArrived.then((): TurnResult => {
         const firstApproval = session.pendingApprovals[0];
+        log("executeTurn: EARLY RETURN due to pending_approval, approvalId=" + (firstApproval?.approvalId || "unknown"));
         return {
           status: "pending_approval",
           output: session.output,
@@ -473,6 +547,7 @@ export class AcpSessionManagerService {
     const now = Date.now();
     for (const [id, session] of this.sessions) {
       if (now - session.lastActiveAt > this.sessionTtlMs) {
+        log("cleanupExpiredSessions: expired session", id, "lastActive=" + new Date(session.lastActiveAt).toISOString());
         const activeTurn = this.activeTurns.get(id);
         if (activeTurn) {
           await activeTurn.turn.cancel({ reason: "ttl_expired" }).catch(() => {});
@@ -489,6 +564,7 @@ export class AcpSessionManagerService {
   }
 
   private emitEvent(event: SessionEvent): void {
+    log("event:", event.type, "sessionId" in event ? event.sessionId : "");
     for (const cb of this.eventCallbacks) {
       try { cb(event); } catch { /* swallow */ }
     }
