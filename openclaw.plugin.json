@@ -1,7 +1,7 @@
 {
   "id": "acp-session-manager",
   "name": "ACP Session Manager",
-  "description": "Manage ACP sub-sessions lifecycle, mid-turn intervention, and approval surfacing.",
+  "description": "Manage ACP sub-sessions lifecycle, mid-turn intervention, and approval surfacing via direct acpx integration.",
   "activation": {
     "onStartup": true
   },
@@ -30,6 +30,30 @@
         "minimum": 10000,
         "default": 300000,
         "description": "Default timeout in milliseconds for approval requests."
+      },
+      "cwd": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Working directory for ACP sessions. Defaults to the OpenClaw workspace."
+      },
+      "stateDir": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Directory for session state persistence. Defaults to {cwd}/.acp-sessions."
+      },
+      "permissionMode": {
+        "type": "string",
+        "enum": ["approve-all", "approve-reads", "deny-all"],
+        "default": "approve-reads",
+        "description": "Permission policy for ACP agents. approve-reads auto-approves read/search, approve-all auto-approves everything, deny-all requires approval for all operations."
+      },
+      "agents": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": "Custom agent command overrides. Keys are agent names (used in acp_launch agent_id), values are shell commands. Built-in defaults: qoder=qodercli --acp, claude=npx -y @agentclientprotocol/claude-agent-acp@latest, codex=npx -y @agentclientprotocol/codex-acp@latest, gemini=gemini --acp, opencode=npx -y opencode-ai acp, kimi=kimi acp, qwen=qwen --acp, cursor=cursor-agent acp, copilot=copilot --acp --stdio, kilocode=npx -y @kilocode/cli acp, trae=traecli acp serve, openclaw=openclaw acp."
       }
     }
   },
@@ -45,6 +69,23 @@
     "approvalTimeoutMs": {
       "label": "Approval Timeout (ms)",
       "help": "How long to wait for an approval decision before auto-rejecting."
+    },
+    "cwd": {
+      "label": "Working Directory",
+      "help": "Default working directory for spawned ACP agent sessions."
+    },
+    "stateDir": {
+      "label": "State Directory",
+      "help": "Directory for session persistence and recovery."
+    },
+    "permissionMode": {
+      "label": "Permission Mode",
+      "help": "Controls which operations require explicit approval. 'approve-reads' is recommended for most use cases."
+    },
+    "agents": {
+      "label": "Agent Commands",
+      "help": "Override or add ACP agent launch commands. Format: {\"agent-name\": \"command --flags\"}. User entries override built-in defaults.",
+      "advanced": true
     }
   }
 }

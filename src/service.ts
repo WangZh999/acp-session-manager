@@ -36,6 +36,21 @@ export type { AcpRuntime };
 
 const LOG_PREFIX = "[acp-sm]";
 
+const DEFAULT_AGENTS: Record<string, string> = {
+  qoder: "qodercli --acp",
+  claude: "npx -y @agentclientprotocol/claude-agent-acp@latest",
+  codex: "npx -y @agentclientprotocol/codex-acp@latest",
+  gemini: "gemini --acp",
+  opencode: "npx -y opencode-ai acp",
+  kimi: "kimi acp",
+  qwen: "qwen --acp",
+  cursor: "cursor-agent acp",
+  copilot: "copilot --acp --stdio",
+  kilocode: "npx -y @kilocode/cli acp",
+  trae: "traecli acp serve",
+  openclaw: "openclaw acp",
+};
+
 function log(...args: unknown[]): void {
   console.log(LOG_PREFIX, new Date().toISOString(), ...args);
 }
@@ -98,19 +113,21 @@ export class AcpSessionManagerService {
     const cwd = this.runtimeConfig.cwd || process.cwd();
     const stateDir = this.runtimeConfig.stateDir || `${cwd}/.acp-sessions`;
 
-    const rawAgents = this.runtimeConfig.agents ?? { qoder: "qodercli --acp" };
-    const agents: Record<string, string> = {};
-    for (const [name, val] of Object.entries(rawAgents)) {
-      if (typeof val === "string") {
-        agents[name] = val;
-      } else if (val && typeof val === "object" && "command" in val) {
-        const obj = val as { command: string; args?: string[] };
-        agents[name] = obj.args ? `${obj.command} ${obj.args.join(" ")}` : obj.command;
+    const rawAgents = this.runtimeConfig.agents;
+    const agents: Record<string, string> = { ...DEFAULT_AGENTS };
+    if (rawAgents) {
+      for (const [name, val] of Object.entries(rawAgents)) {
+        if (typeof val === "string") {
+          agents[name.toLowerCase()] = val;
+        } else if (val && typeof val === "object" && "command" in val) {
+          const obj = val as { command: string; args?: string[] };
+          agents[name.toLowerCase()] = obj.args ? `${obj.command} ${obj.args.join(" ")}` : obj.command;
+        }
       }
     }
 
     log("start: cwd=" + cwd, "stateDir=" + stateDir, "permissionMode=" + (this.runtimeConfig.permissionMode || "approve-reads"));
-    log("start: agents:", JSON.stringify(agents));
+    log("start: agents (" + Object.keys(agents).length + "):", JSON.stringify(agents));
 
     const options: AcpRuntimeOptions = {
       cwd,
