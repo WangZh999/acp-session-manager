@@ -217,6 +217,53 @@ export class AcpSessionManagerService {
     return finalSession;
   }
 
+  async launchSessionBackground(params: AcpSessionLaunchParams): Promise<ManagedAcpSession> {
+    log("launchSessionBackground:", JSON.stringify({ agentId: params.agentId, task: params.task.slice(0, 100), mode: params.mode, cwd: params.cwd }));
+    this.start();
+    if (!this.runtime) throw new Error("Runtime unavailable");
+    if (!params.agentId?.trim()) {
+      throw new Error(`agentId is required but received ${JSON.stringify(params.agentId)}`);
+    }
+    if (this.sessions.size >= this.maxSessions) {
+      await this.cleanupExpiredSessions();
+      if (this.sessions.size >= this.maxSessions) {
+        throw new Error(`Session pool full (max ${this.maxSessions})`);
+      }
+    }
+
+    const sessionId = generateSessionId();
+    const sessionKey = `acp-manager:${params.agentId}:${sessionId}`;
+
+    const handle = await this.runtime.ensureSession({
+      sessionKey,
+      agent: params.agentId,
+      mode: params.mode === "session" ? "persistent" : "oneshot",
+      ...(params.cwd ? { cwd: params.cwd } : {}),
+    });
+
+    const session: ManagedAcpSession = {
+      sessionId,
+      handle,
+      agentId: params.agentId,
+      status: "running",
+      createdAt: Date.now(),
+      lastActiveAt: Date.now(),
+      mode: params.mode || "run",
+      cwd: params.cwd,
+      model: params.model,
+      output: "",
+      toolCalls: [],
+      parentSessionKey: params.parentSessionKey,
+    };
+
+    this.sessions.set(sessionId, session);
+    this.emitEvent({ type: "session_created", sessionId, agentId: params.agentId });
+    log("launchSessionBackground: session created, starting turn in background for", sessionId);
+
+    void this.executeTurn(sessionId, params.task);
+    return session;
+  }
+
   async sendMessage(sessionId: string, message: string): Promise<TurnResult> {
     log("sendMessage:", sessionId, "message=" + message.slice(0, 100));
     const session = this.getSessionOrThrow(sessionId);

@@ -39,6 +39,15 @@ const AcpLaunchSchema = Type.Object({
       default: "run",
     }),
   ),
+  background: Type.Optional(
+    Type.Boolean({
+      description:
+        "If true, launch the session and return immediately without waiting for the first turn to complete. " +
+        "The parent session will be notified via context injection when the task finishes. " +
+        "Use acp_list to poll status. Default: false.",
+      default: false,
+    }),
+  ),
   model: Type.Optional(
     Type.String({ description: "Optional model override forwarded to the ACP agent." }),
   ),
@@ -66,18 +75,34 @@ export function createAcpLaunchTool(ctx: PluginToolContextLike) {
         // 兼容 snake_case (schema 定义) 与 camelCase (框架可能转换)
         const agentId = (params.agent_id ?? params.agentId) as string;
         const task = params.task as string;
+        const background = params.background === true;
         // 父 sessionKey 在 factory ctx 中由宿主注入，调用时直接复用闭包值
         const parentSessionKey = ctx?.sessionKey;
         const cwd = (params.cwd as string | undefined) ?? ctx?.workspaceDir;
 
-        const session = await service.launchSession({
+        const launchParams = {
           agentId,
           task,
-          mode: params.mode === "session" ? "session" : "run",
+          mode: (params.mode === "session" ? "session" : "run") as "run" | "session",
           model: params.model as string | undefined,
           cwd,
           parentSessionKey,
-        });
+        };
+
+        if (background) {
+          const session = await service.launchSessionBackground(launchParams);
+          return jsonResult({
+            status: "ok" as const,
+            sessionId: session.sessionId,
+            agentId: session.agentId,
+            sessionStatus: session.status,
+            mode: session.mode,
+            background: true,
+            message: "Session launched in background. Use acp_list to poll status. Parent session will be notified on completion.",
+          });
+        }
+
+        const session = await service.launchSession(launchParams);
 
         const output = session.output ?? "";
         const truncated = output.length > OUTPUT_PREVIEW_LIMIT;
