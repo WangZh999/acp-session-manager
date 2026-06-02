@@ -28,7 +28,6 @@ export type AcpPermissionDecision = _AcpPermissionDecision;
 export type AcpSessionStatus =
   | "initializing"
   | "running"
-  | "pending_approval"
   | "completed"
   | "failed"
   | "cancelled";
@@ -57,8 +56,6 @@ export type ManagedAcpSession = {
   output: string;
   /** 工具调用记录 */
   toolCalls: ToolCallRecord[];
-  /** 待处理审批请求队列 */
-  pendingApprovals: PendingApproval[];
   /** 错误信息 */
   error?: string;
   /** 最后 turn 的停止原因 */
@@ -68,8 +65,6 @@ export type ManagedAcpSession = {
    * 用于将子会话的审批/完成/失败事件注入回正确的主会话上下文。
    */
   parentSessionKey?: string;
-  /** Internal: signal for non-blocking approval detection */
-  _approvalSignal?: (() => void) | undefined;
 };
 
 /** 工具调用记录 */
@@ -104,56 +99,15 @@ export type AcpSessionLaunchParams = {
 };
 
 // ============================================================
-// Approval Types
-// ============================================================
-
-/** 待处理审批请求 */
-export type PendingApproval = {
-  /** 唯一审批 ID */
-  approvalId: string;
-  /** 关联的会话 ID */
-  sessionId: string;
-  /** 工具名称 */
-  toolName?: string;
-  /** 操作标题 */
-  title: string;
-  /** 操作描述/详情 */
-  description?: string;
-  /** 可选的决策选项 */
-  options: ApprovalOption[];
-  /** 请求时间戳 */
-  timestamp: number;
-  /** 超时时间 (ms) */
-  timeoutMs: number;
-  /** 决策 Promise 的 resolver */
-  resolve?: (decision: ApprovalDecision) => void;
-};
-
-/** 审批选项 */
-export type ApprovalOption = {
-  id: string;
-  label: string;
-  description?: string;
-};
-
-/** 审批决策 */
-export type ApprovalDecision =
-  | "allow_once"
-  | "allow_always"
-  | "reject"
-  | "cancel";
-
-// ============================================================
 // Turn Result
 // ============================================================
 
 /** Turn 执行结果（工具返回值） */
 export type TurnResult = {
-  status: "completed" | "cancelled" | "failed" | "pending_approval";
+  status: "completed" | "cancelled" | "failed";
   output?: string;
   stopReason?: string;
   error?: string;
-  pendingApprovalId?: string;
 };
 
 // ============================================================
@@ -165,6 +119,4 @@ export type SessionEvent =
   | { type: "session_created"; sessionId: string; agentId: string }
   | { type: "session_completed"; sessionId: string; output: string }
   | { type: "session_failed"; sessionId: string; error: string }
-  | { type: "session_cancelled"; sessionId: string }
-  | { type: "approval_requested"; sessionId: string; approval: PendingApproval }
-  | { type: "approval_resolved"; sessionId: string; approvalId: string; decision: ApprovalDecision };
+  | { type: "session_cancelled"; sessionId: string };

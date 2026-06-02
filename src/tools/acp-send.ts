@@ -45,8 +45,6 @@ export function createAcpSendTool(_ctx: PluginToolContextLike) {
         const truncated = output.length > OUTPUT_PREVIEW_LIMIT;
         const preview = truncated ? output.slice(0, OUTPUT_PREVIEW_LIMIT) : output;
 
-        const session = service.getSession(sessionId);
-
         return jsonResult({
           status: "ok" as const,
           sessionId,
@@ -56,7 +54,6 @@ export function createAcpSendTool(_ctx: PluginToolContextLike) {
           outputPreview: preview,
           outputTruncated: truncated,
           outputLength: output.length,
-          pendingApprovalsCount: session?.pendingApprovals.length ?? 0,
         });
       } catch (err) {
         return errorResult(err);

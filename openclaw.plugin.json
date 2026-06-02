@@ -1,13 +1,13 @@
 {
   "id": "acp-session-manager",
   "name": "ACP Session Manager",
-  "description": "Manage ACP sub-sessions lifecycle, mid-turn intervention, and approval surfacing via direct acpx integration.",
+  "description": "Manage ACP sub-sessions lifecycle with native gateway approval integration.",
   "activation": {
     "onStartup": true
   },
   "enabledByDefault": true,
   "contracts": {
-    "tools": ["acp_launch", "acp_list", "acp_send", "acp_cancel", "acp_config", "acp_close", "acp_approve"]
+    "tools": ["acp_launch", "acp_list", "acp_send", "acp_cancel", "acp_config", "acp_close"]
   },
   "configSchema": {
     "type": "object",

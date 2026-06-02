@@ -1,55 +1,13 @@
 /**
  * Event Formatter Utilities
  *
- * 用于将审批、会话完成/失败、Turn 结果等事件格式化为可读文本或结构化 JSON。
+ * 用于将会话完成/失败、Turn 结果等事件格式化为可读文本或结构化 JSON。
  */
 
 import type {
-  PendingApproval,
   ManagedAcpSession,
   TurnResult,
 } from "../types.js";
-
-/**
- * 格式化审批消息（用于主 Session 注入）
- */
-export function formatApprovalForInjection(
-  sessionId: string,
-  approval: PendingApproval,
-): string {
-  const lines = [
-    `## 🔐 ACP 审批请求`,
-    ``,
-    `| 字段 | 值 |`,
-    `|------|------|`,
-    `| 会话 ID | \`${sessionId}\` |`,
-    `| 审批 ID | \`${approval.approvalId}\` |`,
-    `| 操作 | ${approval.title} |`,
-  ];
-
-  if (approval.toolName) {
-    lines.push(`| 工具 | \`${approval.toolName}\` |`);
-  }
-
-  if (approval.description) {
-    lines.push(``, `**详情**: ${approval.description}`);
-  }
-
-  lines.push(``);
-  lines.push(`**可选决策**:`);
-  for (const opt of approval.options) {
-    lines.push(
-      `- \`${opt.id}\` — ${opt.label}${opt.description ? `: ${opt.description}` : ""}`,
-    );
-  }
-
-  lines.push(``);
-  lines.push(
-    `> 使用 \`acp_approve(session_id="${sessionId}", approval_id="${approval.approvalId}", decision="...")\` 处理`,
-  );
-
-  return lines.join("\n");
-}
 
 /**
  * 格式化会话完成通知
@@ -116,8 +74,6 @@ export function formatTurnResult(
 
   if (result.stopReason) formatted.stopReason = result.stopReason;
   if (result.error) formatted.error = result.error;
-  if (result.pendingApprovalId)
-    formatted.pendingApprovalId = result.pendingApprovalId;
 
   return formatted;
 }

@@ -1,12 +1,9 @@
 /**
  * ACP Session Manager Service
  *
- * 核心服务层：直接集成 acpx runtime，会话池管理、审批队列。
- * 通过 onPermissionRequest 回调拦截权限请求，实现审批透出。
- *
- * 关键设计：turn 执行为非阻塞模式。当 permission request 到达时，
- * executeTurn 立即返回 pending_approval 状态，turn 在后台挂起等待决策。
- * 调用者可通过 acp_approve 解决审批，turn 自动恢复执行。
+ * 核心服务层：直接集成 acpx runtime，会话池管理。
+ * 通过 onPermissionRequest 回调拦截权限请求，调用 openclaw gateway 的
+ * plugin.approval.request/waitDecision 展示原生审批 UI 并等待操作者决策。
  */
 
 import {
@@ -22,12 +19,12 @@ import {
   type AcpPermissionDecision,
 } from "acpx/runtime";
 
+import { callGatewayTool } from "openclaw/plugin-sdk/agent-harness-runtime";
+
 import type {
   ManagedAcpSession,
   AcpSessionLaunchParams,
   AcpSessionStatus,
-  PendingApproval,
-  ApprovalDecision,
   TurnResult,
   SessionEvent,
 } from "./types.js";
@@ -102,10 +99,6 @@ export class AcpSessionManagerService {
       this.approvalTimeoutMs = Math.floor(config.approvalTimeoutMs);
     }
     this.runtimeConfig = config;
-  }
-
-  getApprovalTimeoutMs(): number {
-    return this.approvalTimeoutMs;
   }
 
   start(): void {
@@ -211,7 +204,6 @@ export class AcpSessionManagerService {
       model: params.model,
       output: "",
       toolCalls: [],
-      pendingApprovals: [],
       parentSessionKey: params.parentSessionKey,
     };
 
@@ -221,19 +213,13 @@ export class AcpSessionManagerService {
 
     await this.executeTurn(sessionId, params.task);
     const finalSession = this.sessions.get(sessionId) ?? session;
-    log("launchSession: done, sessionId=" + sessionId, "status=" + finalSession.status, "pendingApprovals=" + finalSession.pendingApprovals.length);
+    log("launchSession: done, sessionId=" + sessionId, "status=" + finalSession.status);
     return finalSession;
   }
 
   async sendMessage(sessionId: string, message: string): Promise<TurnResult> {
     log("sendMessage:", sessionId, "message=" + message.slice(0, 100));
     const session = this.getSessionOrThrow(sessionId);
-    if (session.status === "pending_approval") {
-      logWarn("sendMessage: blocked, session", sessionId, "is pending_approval");
-      throw new Error(
-        `Session ${sessionId} is waiting for approval. Use acp_approve to resolve pending approvals first.`,
-      );
-    }
     if (session.status !== "running") {
       throw new Error(`Session ${sessionId} is not active (status: ${session.status})`);
     }
@@ -299,59 +285,6 @@ export class AcpSessionManagerService {
     return this.sessions.get(sessionId);
   }
 
-  addPendingApproval(approval: PendingApproval): void {
-    const session = this.sessions.get(approval.sessionId);
-    if (session) {
-      session.pendingApprovals.push(approval);
-      session.status = "pending_approval";
-      session.lastActiveAt = Date.now();
-      log("addPendingApproval: sessionId=" + approval.sessionId, "approvalId=" + approval.approvalId, "title=" + approval.title, "toolName=" + (approval.toolName || "unknown"));
-      if (session._approvalSignal) {
-        log("addPendingApproval: firing _approvalSignal to unblock executeTurn");
-        session._approvalSignal();
-        session._approvalSignal = undefined;
-      }
-      this.emitEvent({ type: "approval_requested", sessionId: approval.sessionId, approval });
-    } else {
-      logWarn("addPendingApproval: session not found for", approval.sessionId);
-    }
-  }
-
-  resolveApproval(sessionId: string, approvalId: string, decision: ApprovalDecision): boolean {
-    log("resolveApproval:", sessionId, "approvalId=" + approvalId, "decision=" + decision);
-    const session = this.sessions.get(sessionId);
-    if (!session) {
-      logWarn("resolveApproval: session not found", sessionId);
-      return false;
-    }
-    const idx = session.pendingApprovals.findIndex((a) => a.approvalId === approvalId);
-    if (idx === -1) {
-      logWarn("resolveApproval: approval not found", approvalId, "in session", sessionId);
-      return false;
-    }
-    const approval = session.pendingApprovals[idx]!;
-    if (approval.resolve) {
-      log("resolveApproval: calling resolver callback, decision=" + decision);
-      approval.resolve(decision);
-    }
-    session.pendingApprovals.splice(idx, 1);
-    session.lastActiveAt = Date.now();
-    if (session.pendingApprovals.length === 0 && session.status === "pending_approval") {
-      session.status = "running";
-      log("resolveApproval: no more pending approvals, session status -> running");
-    }
-    this.emitEvent({ type: "approval_resolved", sessionId, approvalId, decision });
-    return true;
-  }
-
-  getPendingApprovals(): PendingApproval[] {
-    const all: PendingApproval[] = [];
-    for (const session of this.sessions.values()) {
-      all.push(...session.pendingApprovals);
-    }
-    return all;
-  }
-
   // ===== Private =====
 
   private async handlePermissionRequest(
@@ -359,64 +292,96 @@ export class AcpSessionManagerService {
     ctx: { signal: AbortSignal },
   ): Promise<AcpPermissionDecision | undefined> {
     log("handlePermissionRequest: acpSessionId=" + req.sessionId, "toolTitle=" + (req.raw.toolCall?.title || "unknown"), "kind=" + (req.inferredKind || "unknown"));
-    log("handlePermissionRequest: raw toolCall:", JSON.stringify({
-      title: req.raw.toolCall?.title,
-      kind: req.raw.toolCall?.kind,
-      rawInput: req.raw.toolCall?.rawInput,
-    }));
 
     const sessionId = this.findSessionIdByAcpSessionId(req.sessionId);
     if (!sessionId) {
       logWarn("handlePermissionRequest: could not find managed session for acpSessionId=" + req.sessionId);
       return undefined;
     }
-    log("handlePermissionRequest: mapped to managed sessionId=" + sessionId);
+    const session = this.sessions.get(sessionId);
+    const parentSessionKey = session?.parentSessionKey;
+    log("handlePermissionRequest: mapped to managed sessionId=" + sessionId, "parentSessionKey=" + (parentSessionKey || "none"));
 
-    const approvalId = `approval_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const toolTitle = req.raw.toolCall?.title || "Permission Request";
     const toolName = req.raw.toolCall?.title?.split(":")[0]?.trim();
+    const description = this.buildPermissionDescription(req);
+    const timeoutMs = this.approvalTimeoutMs;
+    const gatewayTimeoutMs = timeoutMs + 10_000;
 
-    const approval: PendingApproval = {
-      approvalId,
-      sessionId,
-      toolName,
-      title: toolTitle,
-      description: this.buildPermissionDescription(req),
-      options: [
-        { id: "allow_once", label: "Allow Once", description: "Allow this action one time" },
-        { id: "allow_always", label: "Allow Always", description: "Always allow this type of action" },
-        { id: "reject", label: "Reject", description: "Deny this action" },
-      ],
-      timestamp: Date.now(),
-      timeoutMs: this.approvalTimeoutMs,
-    };
+    try {
+      const requestResult = await callGatewayTool<{
+        id?: string;
+        decision?: string | null;
+      }>(
+        "plugin.approval.request",
+        { timeoutMs: gatewayTimeoutMs },
+        {
+          pluginId: "acp-session-manager",
+          title: toolTitle.slice(0, 80),
+          description: description.slice(0, 256),
+          severity: "warning",
+          toolName,
+          agentId: session?.agentId,
+          sessionKey: parentSessionKey,
+          allowedDecisions: ["allow-once", "allow-always", "deny"],
+          timeoutMs,
+          twoPhase: true,
+        },
+        { expectFinal: false },
+      );
 
-    log("handlePermissionRequest: created approval approvalId=" + approvalId, "timeoutMs=" + this.approvalTimeoutMs, "waiting for decision...");
+      const approvalId = requestResult?.id;
+      if (!approvalId) {
+        logWarn("handlePermissionRequest: plugin.approval.request returned no id, rejecting");
+        return { outcome: "reject_once" };
+      }
+      log("handlePermissionRequest: approval created, id=" + approvalId);
 
-    return new Promise<AcpPermissionDecision | undefined>((resolve) => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
+      let decision: string | null | undefined;
+      if (Object.hasOwn(requestResult ?? {}, "decision")) {
+        decision = requestResult.decision;
+      } else {
+        const waitResult = await this.waitForApprovalDecision(approvalId, gatewayTimeoutMs, ctx.signal);
+        decision = waitResult?.decision;
+      }
 
-      approval.resolve = (decision: ApprovalDecision) => {
-        if (timer) clearTimeout(timer);
-        const acpDecision = this.mapDecisionToAcpDecision(decision);
-        log("handlePermissionRequest: resolved approvalId=" + approvalId, "decision=" + decision, "-> acpOutcome=" + acpDecision.outcome);
-        resolve(acpDecision);
-      };
+      log("handlePermissionRequest: decision=" + (decision ?? "null"));
 
-      this.addPendingApproval(approval);
+      if (decision === "allow-once") return { outcome: "allow_once" };
+      if (decision === "allow-always") return { outcome: "allow_always" };
+      if (decision === "deny") return { outcome: "reject_once" };
+      return { outcome: "reject_once" };
+    } catch (err) {
+      logError("handlePermissionRequest: gateway call failed:", err instanceof Error ? err.message : String(err));
+      return { outcome: "reject_once" };
+    }
+  }
 
-      timer = setTimeout(() => {
-        logWarn("handlePermissionRequest: TIMEOUT approvalId=" + approvalId, "after", this.approvalTimeoutMs + "ms, auto-rejecting");
-        this.resolveApproval(sessionId, approvalId, "reject");
-        resolve({ outcome: "reject_once" });
-      }, this.approvalTimeoutMs);
+  private async waitForApprovalDecision(
+    approvalId: string,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<{ id?: string; decision?: string | null } | undefined> {
+    const waitPromise = callGatewayTool<{ id?: string; decision?: string | null }>(
+      "plugin.approval.waitDecision",
+      { timeoutMs },
+      { id: approvalId },
+    );
 
-      ctx.signal.addEventListener("abort", () => {
-        if (timer) clearTimeout(timer);
-        logWarn("handlePermissionRequest: ABORTED approvalId=" + approvalId);
-        this.resolveApproval(sessionId, approvalId, "cancel");
-        resolve({ outcome: "cancel" });
-      }, { once: true });
+    if (!signal) return waitPromise;
+
+    return Promise.race([
+      waitPromise,
+      new Promise<undefined>((_, reject) => {
+        if (signal.aborted) {
+          reject(signal.reason);
+          return;
+        }
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      }),
+    ]).catch((err) => {
+      logWarn("handlePermissionRequest: waitDecision aborted:", err instanceof Error ? err.message : String(err));
+      return undefined;
     });
   }
 
@@ -475,15 +440,6 @@ export class AcpSessionManagerService {
     return parts.join("\n") || "Permission requested";
   }
 
-  private mapDecisionToAcpDecision(decision: ApprovalDecision): AcpPermissionDecision {
-    switch (decision) {
-      case "allow_once": return { outcome: "allow_once" };
-      case "allow_always": return { outcome: "allow_always" };
-      case "reject": return { outcome: "reject_once" };
-      case "cancel": return { outcome: "cancel" };
-    }
-  }
-
   private executeTurn(sessionId: string, text: string): Promise<TurnResult> {
     const session = this.getSessionOrThrow(sessionId);
     if (!this.runtime) throw new Error("Service not started");
@@ -498,13 +454,7 @@ export class AcpSessionManagerService {
       requestId,
     });
 
-    let approvalSignalResolve: (() => void) | undefined;
-    const approvalArrived = new Promise<void>((resolve) => {
-      approvalSignalResolve = resolve;
-    });
-    session._approvalSignal = approvalSignalResolve;
-
-    const turnCompleted = new Promise<TurnResult>((resolve) => {
+    return new Promise<TurnResult>((resolve) => {
       const collectEvents = async () => {
         try {
           let eventCount = 0;
@@ -536,7 +486,6 @@ export class AcpSessionManagerService {
           const result = await turn.result;
           session.lastActiveAt = Date.now();
           this.activeTurns.delete(sessionId);
-          session._approvalSignal = undefined;
 
           log("executeTurn: turn result:", JSON.stringify(result));
 
@@ -564,7 +513,6 @@ export class AcpSessionManagerService {
           session.error = errorMsg;
           session.lastActiveAt = Date.now();
           this.activeTurns.delete(sessionId);
-          session._approvalSignal = undefined;
           this.emitEvent({ type: "session_failed", sessionId, error: errorMsg });
           resolve({ status: "failed", error: errorMsg });
         }
@@ -573,19 +521,6 @@ export class AcpSessionManagerService {
       const collecting = collectEvents();
       this.activeTurns.set(sessionId, { turn, collecting });
     });
-
-    return Promise.race([
-      turnCompleted,
-      approvalArrived.then((): TurnResult => {
-        const firstApproval = session.pendingApprovals[0];
-        log("executeTurn: EARLY RETURN due to pending_approval, approvalId=" + (firstApproval?.approvalId || "unknown"));
-        return {
-          status: "pending_approval",
-          output: session.output,
-          pendingApprovalId: firstApproval?.approvalId,
-        };
-      }),
-    ]);
   }
 
   private getSessionOrThrow(sessionId: string): ManagedAcpSession {

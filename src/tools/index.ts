@@ -12,4 +12,3 @@ export { createAcpSendTool } from "./acp-send.js";
 export { createAcpCancelTool } from "./acp-cancel.js";
 export { createAcpConfigTool } from "./acp-config.js";
 export { createAcpCloseTool } from "./acp-close.js";
-export { createAcpApproveTool } from "./acp-approve.js";

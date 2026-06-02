@@ -28,7 +28,6 @@ export function registerEventInjector(api: any): void {
       case "session_failed":
         await injectSessionFailedEvent(api, event.sessionId, event.error);
         break;
-      // approval_requested 已在 index.ts 的 handleApprovalSurfacing 中处理
       default:
         break;
     }

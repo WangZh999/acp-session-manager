@@ -94,13 +94,6 @@ export function createAcpLaunchTool(ctx: PluginToolContextLike) {
           outputPreview: preview,
           outputTruncated: truncated,
           outputLength: output.length,
-          pendingApprovalsCount: session.pendingApprovals.length,
-          pendingApprovals: session.pendingApprovals.map((a) => ({
-            approvalId: a.approvalId,
-            title: a.title,
-            description: a.description,
-            toolName: a.toolName,
-          })),
         });
       } catch (err) {
         return errorResult(err);

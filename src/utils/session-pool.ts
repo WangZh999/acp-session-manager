@@ -15,7 +15,6 @@ export type SessionPoolStats = {
   completed: number;
   failed: number;
   cancelled: number;
-  pendingApprovals: number;
   oldestSessionAge: number; // ms
 };
 
@@ -32,7 +31,6 @@ export function computePoolStats(
     completed: 0,
     failed: 0,
     cancelled: 0,
-    pendingApprovals: 0,
     oldestSessionAge: 0,
   };
 
@@ -53,7 +51,6 @@ export function computePoolStats(
       default:
         break;
     }
-    stats.pendingApprovals += session.pendingApprovals.length;
     const age = now - session.createdAt;
     if (age > stats.oldestSessionAge) stats.oldestSessionAge = age;
   }
@@ -77,7 +74,6 @@ export function formatSessionSummary(
     model: session.model || "default",
     outputLength: session.output.length,
     toolCallsCount: session.toolCalls.length,
-    pendingApprovalsCount: session.pendingApprovals.length,
     error: session.error,
   };
 }
@@ -90,7 +86,6 @@ export function sortSessionsByActivity(
 ): ManagedAcpSession[] {
   const statusPriority: Record<AcpSessionStatus, number> = {
     running: 0,
-    pending_approval: 0,
     initializing: 1,
     completed: 2,
     failed: 3,
