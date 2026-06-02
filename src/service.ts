@@ -82,6 +82,7 @@ export class AcpSessionManagerService {
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private started = false;
   private activeTurns = new Map<string, { turn: AcpRuntimeTurn; collecting: Promise<void> }>();
+  private acpSessionIdMap = new Map<string, string>();
 
   private maxSessions = 50;
   private sessionTtlMs = 24 * 60 * 60 * 1000;
@@ -420,11 +421,44 @@ export class AcpSessionManagerService {
   }
 
   private findSessionIdByAcpSessionId(acpSessionId: string): string | undefined {
-    for (const [id, session] of this.sessions) {
-      const handleSessionId = session.handle.agentSessionId || session.handle.backendSessionId;
-      if (handleSessionId === acpSessionId) return id;
-      if (session.handle.sessionKey.includes(id)) return id;
+    if (this.acpSessionIdMap.has(acpSessionId)) {
+      return this.acpSessionIdMap.get(acpSessionId);
     }
+
+    for (const [id, session] of this.sessions) {
+      if (session.handle.agentSessionId === acpSessionId) {
+        this.acpSessionIdMap.set(acpSessionId, id);
+        return id;
+      }
+      if (session.handle.backendSessionId === acpSessionId) {
+        this.acpSessionIdMap.set(acpSessionId, id);
+        return id;
+      }
+    }
+
+    // Fallback: if there's exactly one session with an active turn, it must be the one
+    // requesting permission (permission requests only fire during active turns)
+    const activeTurnSessionIds = [...this.activeTurns.keys()];
+    if (activeTurnSessionIds.length === 1) {
+      const id = activeTurnSessionIds[0];
+      this.acpSessionIdMap.set(acpSessionId, id);
+      log("findSessionIdByAcpSessionId: mapped acpSessionId=" + acpSessionId + " to " + id + " (only active turn)");
+      return id;
+    }
+
+    // Multiple active turns: match by the session that has a pending tool_call with status=pending
+    for (const [id, session] of this.sessions) {
+      if (this.activeTurns.has(id) && session.status === "running") {
+        const lastToolCall = session.toolCalls[session.toolCalls.length - 1];
+        if (lastToolCall?.status === "pending") {
+          this.acpSessionIdMap.set(acpSessionId, id);
+          log("findSessionIdByAcpSessionId: mapped acpSessionId=" + acpSessionId + " to " + id + " (has pending tool_call)");
+          return id;
+        }
+      }
+    }
+
+    logWarn("findSessionIdByAcpSessionId: could not resolve acpSessionId=" + acpSessionId, "activeTurns=" + activeTurnSessionIds.length);
     return undefined;
   }
 
