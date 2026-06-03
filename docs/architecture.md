@@ -119,14 +119,19 @@ User → Main Agent → acp_launch(task, background=true)
                          ▼
               event-injector.ts
                          │
-                         ├── formatSessionCompletionNotice()
-                         │
-                         ├── api.session.workflow.enqueueNextTurnInjection()
-                         │   (injects completion notice into parent session context)
-                         │
-                         └── [on failure] api.session.workflow.scheduleSessionTurn()
-                             (wakes parent session to handle error)
+                         └── api.session.workflow.enqueueNextTurnInjection()
+                             (stores completion notice; appears as system context
+                              on the parent session's NEXT user-initiated turn)
 ```
+
+### Background Notification Behavior
+
+- `enqueueNextTurnInjection` **does not trigger a new turn** — it injects text into the
+  parent session's next prompt context (prepend/append). The notification becomes visible
+  when the user sends the next message.
+- Use `acp_list` to poll session status if you need immediate feedback.
+- The injection has a TTL of 10 minutes; if no turn occurs within that window, it expires.
+- Max 32 injections per session per plugin; text max 32KB.
 
 ---
 
