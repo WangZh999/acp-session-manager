@@ -10,6 +10,7 @@ import {
   formatSessionCompletionNotice,
   formatSessionFailureNotice,
 } from "../utils/event-formatter.js";
+import { callGatewayTool } from "openclaw/plugin-sdk/agent-harness-runtime";
 import type { SessionEvent } from "../types.js";
 
 export function registerEventInjector(api: any): void {
@@ -55,12 +56,14 @@ async function injectSessionCompletedEvent(
       idempotencyKey: `completed:${sessionId}`,
     });
 
-    await api.session?.workflow?.scheduleSessionTurn?.({
-      sessionKey: parentSessionKey,
-      message: `[ACP] 子会话 ${sessionId} (${session?.agentId || "agent"}) 已完成`,
-      delayMs: 0,
-      deleteAfterRun: true,
-    });
+    await callGatewayTool(
+      "agent",
+      { timeoutMs: 30_000 },
+      {
+        sessionKey: parentSessionKey,
+        message: `[ACP] 后台子会话 ${sessionId} (${session?.agentId || "agent"}) 已完成。输出摘要: ${(output || "").slice(-200)}`,
+      },
+    ).catch(() => {});
   } catch (err) {
     console.error(`[acp-sm] event-injector: completion inject failed: ${String(err)}`);
   }
@@ -88,13 +91,16 @@ async function injectSessionFailedEvent(
       idempotencyKey: `failed:${sessionId}`,
     });
 
-    await api.session?.workflow?.scheduleSessionTurn?.({
-      sessionKey: parentSessionKey,
-      message: `[ACP] 子会话 ${sessionId} (${session?.agentId || "agent"}) 执行失败: ${error.slice(0, 100)}`,
-      delayMs: 0,
-      deleteAfterRun: true,
-    });
+    await callGatewayTool(
+      "agent",
+      { timeoutMs: 30_000 },
+      {
+        sessionKey: parentSessionKey,
+        message: `[ACP] 后台子会话 ${sessionId} (${session?.agentId || "agent"}) 执行失败: ${error.slice(0, 200)}`,
+      },
+    ).catch(() => {});
   } catch (err) {
     console.error(`[acp-sm] event-injector: failure inject failed: ${String(err)}`);
   }
 }
+
