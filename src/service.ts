@@ -522,6 +522,16 @@ export class AcpSessionManagerService {
     return parts.join("\n") || "Permission requested";
   }
 
+  private progressThrottleMap = new Map<string, number>();
+
+  private shouldThrottleProgress(sessionId: string): boolean {
+    const now = Date.now();
+    const last = this.progressThrottleMap.get(sessionId) || 0;
+    if (now - last < 2000) return false;
+    this.progressThrottleMap.set(sessionId, now);
+    return true;
+  }
+
   private executeTurn(sessionId: string, text: string, onUpdate?: (result: unknown) => void): Promise<TurnResult> {
     const session = this.getSessionOrThrow(sessionId);
     if (!this.runtime) throw new Error("Service not started");
@@ -545,12 +555,13 @@ export class AcpSessionManagerService {
             switch (event.type) {
               case "text_delta":
                 session.output += event.text;
-                if (onUpdate) {
+                if (onUpdate && this.shouldThrottleProgress(sessionId)) {
+                  const line = session.output.split("\n").filter(Boolean).pop() || "";
                   onUpdate({
-                    content: [],
-                    details: undefined,
+                    content: [{ type: "text", text: line.slice(-200) }],
+                    details: { status: "running" },
                     progress: {
-                      text: `[${session.agentId}] ${event.stream === "thought" ? "(thinking) " : ""}${event.text.slice(0, 200)}`,
+                      text: `[${session.agentId}] ${line.slice(-120)}`,
                       visibility: "channel",
                       privacy: "public",
                     },
@@ -568,8 +579,8 @@ export class AcpSessionManagerService {
                 });
                 if (onUpdate) {
                   onUpdate({
-                    content: [],
-                    details: undefined,
+                    content: [{ type: "text", text: `${event.title || event.text} (${event.status || "running"})` }],
+                    details: { status: "running" },
                     progress: {
                       text: `[${session.agentId}] ${event.title || event.text} (${event.status || "..."})`,
                       visibility: "channel",
