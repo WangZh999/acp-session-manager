@@ -240,16 +240,19 @@ openclaw config set plugins.entries.acp-session-manager.config.approvalMode plug
 
 ### How ACP sessions notify the parent session
 
-1. **Foreground mode**: `acp_launch` / `acp_send` blocks until turn completes, result returned directly in the tool response.
+1. **Foreground mode**: `acp_launch` / `acp_send` blocks until turn completes, result returned directly in the tool response. Streaming progress is emitted via `onUpdate` during execution.
 
-2. **Background mode**: The `event-injector.ts` hook listens for service events and injects notifications into the parent session:
+2. **Background mode**: The `event-injector.ts` hook listens for service events and injects notifications into the parent session via `enqueueNextTurnInjection`:
 
 | Event | Action |
 |-------|--------|
-| `session_completed` | Inject completion notice with output preview via `enqueueNextTurnInjection` |
-| `session_failed` | Inject failure notice + wake parent session via `scheduleSessionTurn` |
+| `session_completed` | Inject completion notice (output preview) into parent session's next turn context |
+| `session_failed` | Inject failure notice (error details) into parent session's next turn context |
 
-3. **Approval during foreground mode**: The `callGatewayTool("plugin.approval.request")` call blocks the turn. The UI popup appears. When the user decides, the gateway returns the decision, unblocking the turn. The parent agent is unaware of the approval — it just sees the turn taking longer.
+> Note: `enqueueNextTurnInjection` does NOT trigger a new turn. The notification becomes
+> visible when the user sends the next message. Use `acp_list` to poll for immediate status.
+
+3. **Approval during foreground mode**: The `callGatewayTool("exec.approval.request")` (or `plugin.approval.request` depending on `approvalMode`) blocks the turn. The UI popup appears. When the user decides, the gateway returns the decision, unblocking the turn. The parent agent is unaware of the approval — it just sees the turn taking longer.
 
 ### Session State Machine
 
