@@ -547,11 +547,12 @@ export class AcpSessionManagerService {
                 session.output += event.text;
                 if (onUpdate) {
                   onUpdate({
-                    content: [{ type: "text", text: session.output.slice(-2000) }],
+                    content: [],
+                    details: undefined,
                     progress: {
+                      text: `[${session.agentId}] ${event.stream === "thought" ? "(thinking) " : ""}${event.text.slice(0, 200)}`,
                       visibility: "channel",
                       privacy: "public",
-                      text: `[${session.agentId}] ${event.stream === "thought" ? "(thinking) " : ""}${event.text.slice(0, 200)}`,
                     },
                   });
                 }
@@ -567,11 +568,12 @@ export class AcpSessionManagerService {
                 });
                 if (onUpdate) {
                   onUpdate({
-                    content: [{ type: "text", text: `[tool] ${event.title || event.text} (${event.status || "running"})` }],
+                    content: [],
+                    details: undefined,
                     progress: {
+                      text: `[${session.agentId}] ${event.title || event.text} (${event.status || "..."})`,
                       visibility: "channel",
                       privacy: "public",
-                      text: `[${session.agentId}] ${event.title || event.text} (${event.status || "..."})`,
                     },
                   });
                 }
