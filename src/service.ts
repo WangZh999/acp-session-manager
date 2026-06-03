@@ -60,7 +60,7 @@ function logError(...args: unknown[]): void {
   console.error(LOG_PREFIX, new Date().toISOString(), ...args);
 }
 
-export type ServiceEventCallback = (event: SessionEvent) => void;
+export type ServiceEventCallback = (event: SessionEvent) => void | Promise<void>;
 
 export type AcpSessionManagerConfig = {
   maxSessions?: number;
@@ -667,7 +667,16 @@ export class AcpSessionManagerService {
   private emitEvent(event: SessionEvent): void {
     log("event:", event.type, "sessionId" in event ? event.sessionId : "");
     for (const cb of this.eventCallbacks) {
-      try { cb(event); } catch { /* swallow */ }
+      try {
+        const result = cb(event);
+        if (result && typeof (result as any).catch === "function") {
+          (result as Promise<void>).catch((err) => {
+            logError("emitEvent: async callback error:", err instanceof Error ? err.message : String(err));
+          });
+        }
+      } catch (err) {
+        logError("emitEvent: sync callback error:", err instanceof Error ? err.message : String(err));
+      }
     }
   }
 }

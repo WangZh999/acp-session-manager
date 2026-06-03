@@ -15,7 +15,10 @@ import type { SessionEvent } from "../types.js";
 export function registerEventInjector(api: any): void {
   const service = getService();
 
+  console.log("[acp-sm] event-injector: registered, api.session =", typeof api?.session, "workflow =", typeof api?.session?.workflow);
+
   service.onEvent(async (event: SessionEvent) => {
+    console.log("[acp-sm] event-injector: received event:", event.type);
     switch (event.type) {
       case "session_completed":
         await injectSessionCompletedEvent(api, event.sessionId, event.output);
@@ -36,6 +39,7 @@ async function injectSessionCompletedEvent(
 ): Promise<void> {
   const session = getService().getSession(sessionId);
   const parentSessionKey = session?.parentSessionKey;
+  console.log("[acp-sm] event-injector: injectCompleted sessionId=" + sessionId, "parentSessionKey=" + (parentSessionKey || "NONE"), "api.session.workflow=" + typeof api?.session?.workflow);
   if (!parentSessionKey) return;
 
   const text = session
