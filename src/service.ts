@@ -178,7 +178,7 @@ export class AcpSessionManagerService {
     this.eventCallbacks.push(callback);
   }
 
-  async launchSession(params: AcpSessionLaunchParams): Promise<ManagedAcpSession> {
+  async launchSession(params: AcpSessionLaunchParams, onUpdate?: (result: unknown) => void): Promise<ManagedAcpSession> {
     log("launchSession:", JSON.stringify({ agentId: params.agentId, task: params.task.slice(0, 100), mode: params.mode, cwd: params.cwd }));
     this.start();
     if (!this.runtime) throw new Error("Runtime unavailable");
@@ -223,7 +223,7 @@ export class AcpSessionManagerService {
     this.emitEvent({ type: "session_created", sessionId, agentId: params.agentId });
     log("launchSession: executing first turn for", sessionId);
 
-    await this.executeTurn(sessionId, params.task);
+    await this.executeTurn(sessionId, params.task, onUpdate);
     const finalSession = this.sessions.get(sessionId) ?? session;
     log("launchSession: done, sessionId=" + sessionId, "status=" + finalSession.status);
     return finalSession;
@@ -276,13 +276,13 @@ export class AcpSessionManagerService {
     return session;
   }
 
-  async sendMessage(sessionId: string, message: string): Promise<TurnResult> {
+  async sendMessage(sessionId: string, message: string, onUpdate?: (result: unknown) => void): Promise<TurnResult> {
     log("sendMessage:", sessionId, "message=" + message.slice(0, 100));
     const session = this.getSessionOrThrow(sessionId);
     if (session.status !== "running") {
       throw new Error(`Session ${sessionId} is not active (status: ${session.status})`);
     }
-    return this.executeTurn(sessionId, message);
+    return this.executeTurn(sessionId, message, onUpdate);
   }
 
   async cancelSession(sessionId: string, reason?: string): Promise<void> {
@@ -522,12 +522,12 @@ export class AcpSessionManagerService {
     return parts.join("\n") || "Permission requested";
   }
 
-  private executeTurn(sessionId: string, text: string): Promise<TurnResult> {
+  private executeTurn(sessionId: string, text: string, onUpdate?: (result: unknown) => void): Promise<TurnResult> {
     const session = this.getSessionOrThrow(sessionId);
     if (!this.runtime) throw new Error("Service not started");
 
     const requestId = `turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    log("executeTurn: sessionId=" + sessionId, "requestId=" + requestId, "text=" + text.slice(0, 80));
+    log("executeTurn: sessionId=" + sessionId, "requestId=" + requestId, "text=" + text.slice(0, 80), "streaming=" + !!onUpdate);
 
     const turn = this.runtime.startTurn({
       handle: session.handle,
@@ -545,6 +545,16 @@ export class AcpSessionManagerService {
             switch (event.type) {
               case "text_delta":
                 session.output += event.text;
+                if (onUpdate) {
+                  onUpdate({
+                    content: [{ type: "text", text: session.output.slice(-2000) }],
+                    progress: {
+                      visibility: "channel",
+                      privacy: "public",
+                      text: `[${session.agentId}] ${event.stream === "thought" ? "(thinking) " : ""}${event.text.slice(0, 200)}`,
+                    },
+                  });
+                }
                 break;
               case "tool_call":
                 log("executeTurn: [event] tool_call:", event.title || event.text, "status=" + (event.status || "n/a"), "toolCallId=" + (event.toolCallId || "n/a"));
@@ -555,6 +565,16 @@ export class AcpSessionManagerService {
                   status: event.status,
                   timestamp: Date.now(),
                 });
+                if (onUpdate) {
+                  onUpdate({
+                    content: [{ type: "text", text: `[tool] ${event.title || event.text} (${event.status || "running"})` }],
+                    progress: {
+                      visibility: "channel",
+                      privacy: "public",
+                      text: `[${session.agentId}] ${event.title || event.text} (${event.status || "..."})`,
+                    },
+                  });
+                }
                 break;
               case "status":
                 log("executeTurn: [event] status:", (event as any).text);

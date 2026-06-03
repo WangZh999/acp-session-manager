@@ -69,6 +69,7 @@ export function createAcpLaunchTool(ctx: PluginToolContextLike) {
       _toolCallId: string,
       params: Record<string, unknown>,
       _signal?: AbortSignal,
+      onUpdate?: (result: unknown) => void,
     ) => {
       try {
         const service = getService();
@@ -102,7 +103,7 @@ export function createAcpLaunchTool(ctx: PluginToolContextLike) {
           });
         }
 
-        const session = await service.launchSession(launchParams);
+        const session = await service.launchSession(launchParams, onUpdate);
 
         const output = session.output ?? "";
         const truncated = output.length > OUTPUT_PREVIEW_LIMIT;

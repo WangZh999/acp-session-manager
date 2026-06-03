@@ -35,11 +35,12 @@ export function createAcpSendTool(_ctx: PluginToolContextLike) {
       _toolCallId: string,
       params: Record<string, unknown>,
       _signal?: AbortSignal,
+      onUpdate?: (result: unknown) => void,
     ) => {
       try {
         const service = getService();
         const sessionId = (params.session_id ?? params.sessionId) as string;
-        const result = await service.sendMessage(sessionId, params.message as string);
+        const result = await service.sendMessage(sessionId, params.message as string, onUpdate);
 
         const output = result.output ?? "";
         const truncated = output.length > OUTPUT_PREVIEW_LIMIT;
