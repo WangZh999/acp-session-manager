@@ -47,6 +47,12 @@
         "default": "approve-reads",
         "description": "Permission policy for ACP agents. approve-reads auto-approves read/search, approve-all auto-approves everything, deny-all requires approval for all operations."
       },
+      "approvalMode": {
+        "type": "string",
+        "enum": ["exec", "plugin"],
+        "default": "exec",
+        "description": "Which gateway approval method surfaces permission popups. 'exec' (default) uses exec.approval.request, natively forwarded to the Control UI by the ACP translator. 'plugin' uses plugin.approval.request (requires UI/translator support for plugin.approval.requested events)."
+      },
       "agents": {
         "type": "object",
         "additionalProperties": {
@@ -81,6 +87,11 @@
     "permissionMode": {
       "label": "Permission Mode",
       "help": "Controls which operations require explicit approval. 'approve-reads' is recommended for most use cases."
+    },
+    "approvalMode": {
+      "label": "Approval Method",
+      "help": "Which gateway approval method surfaces popups. 'exec' (default) works with the built-in ACP translator. 'plugin' requires UI support for plugin.approval.requested.",
+      "advanced": true
     },
     "agents": {
       "label": "Agent Commands",

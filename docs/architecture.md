@@ -132,6 +132,30 @@ User → Main Agent → acp_launch(task, background=true)
 
 ## Approval Chain Architecture
 
+### Approval Mode (configurable)
+
+The plugin surfaces permission popups via one of two gateway methods, selected by
+the `approvalMode` config option:
+
+| Mode | Gateway Method | Event Broadcast | UI Support |
+|------|----------------|-----------------|------------|
+| `exec` (default) | `exec.approval.request` | `exec.approval.requested` | Natively handled by ACP translator's `handleGatewayEvent` |
+| `plugin` | `plugin.approval.request` | `plugin.approval.requested` | Requires UI/translator support for plugin approval events |
+
+> **Why `exec` is the default**: The ACP translator's `handleGatewayEvent` only
+> forwards `exec.approval.requested` events to the Control UI. `plugin.approval.requested`
+> is not handled by the translator, so popups would not appear unless the UI is
+> extended. Use `plugin` mode only if your environment supports it.
+
+Configure via:
+```bash
+openclaw config set plugins.entries.acp-session-manager.config.approvalMode exec
+# or
+openclaw config set plugins.entries.acp-session-manager.config.approvalMode plugin
+```
+
+### Permission Request Flow
+
 ```
                     Permission Request Flow
                     ========================
@@ -148,13 +172,14 @@ User → Main Agent → acp_launch(task, background=true)
      │                   │───────────────────►│                    │
      │                   │                    │                    │
      │                   │                    │ callGatewayTool    │
-     │                   │                    │ ("plugin.approval  │
-     │                   │                    │  .request")        │
+     │                   │                    │ (exec|plugin       │
+     │                   │                    │  .approval.request)│
      │                   │                    │───────────────────►│
      │                   │                    │                    │
      │                   │                    │                    │──► broadcast
-     │                   │                    │                    │    "plugin.approval
-     │                   │                    │                    │     .requested"
+     │                   │                    │                    │    (exec|plugin)
+     │                   │                    │                    │    .approval
+     │                   │                    │                    │    .requested
      │                   │                    │                    │         │
      │                   │                    │                    │         ▼
      │                   │                    │                    │  ┌────────────┐
@@ -166,8 +191,8 @@ User → Main Agent → acp_launch(task, background=true)
      │                   │                    │                    │  "Allow Once"
      │                   │                    │                    │        │
      │                   │                    │                    │◄───────┘
-     │                   │                    │                    │ plugin.approval
-     │                   │                    │                    │ .resolve
+     │                   │                    │                    │ (exec|plugin)
+     │                   │                    │                    │ .approval.resolve
      │                   │                    │◄───────────────────│
      │                   │                    │  decision:         │
      │                   │                    │  "allow-once"      │
@@ -276,6 +301,7 @@ User → Main Agent → acp_launch(task, background=true)
   "sessionTtlHours": 24,       // Auto-cleanup after inactivity
   "approvalTimeoutMs": 300000,  // 5 min approval timeout
   "permissionMode": "approve-reads", // Permission policy
+  "approvalMode": "exec",        // Approval method: "exec" (default) or "plugin"
   "cwd": "/path/to/workspace",  // Default working directory
   "agents": {                   // Custom agent command overrides
     "my-agent": "my-cli --acp"

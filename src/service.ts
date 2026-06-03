@@ -69,6 +69,14 @@ export type AcpSessionManagerConfig = {
   cwd?: string;
   stateDir?: string;
   permissionMode?: "approve-all" | "approve-reads" | "deny-all";
+  /**
+   * Which gateway approval method to use for surfacing permission popups.
+   * - "exec" (default): uses exec.approval.request, which the ACP translator's
+   *   handleGatewayEvent natively forwards to the Control UI.
+   * - "plugin": uses plugin.approval.request (requires UI/translator support for
+   *   plugin.approval.requested events).
+   */
+  approvalMode?: "exec" | "plugin";
   agents?: Record<string, string | { command: string; args?: string[] }>;
 };
 
@@ -84,6 +92,7 @@ export class AcpSessionManagerService {
   private maxSessions = 50;
   private sessionTtlMs = 24 * 60 * 60 * 1000;
   private approvalTimeoutMs = 5 * 60 * 1000;
+  private approvalMode: "exec" | "plugin" = "exec";
   private runtimeConfig: AcpSessionManagerConfig = {};
 
   configure(config: AcpSessionManagerConfig | undefined | null): void {
@@ -97,6 +106,9 @@ export class AcpSessionManagerService {
     }
     if (typeof config.approvalTimeoutMs === "number" && config.approvalTimeoutMs >= 10_000) {
       this.approvalTimeoutMs = Math.floor(config.approvalTimeoutMs);
+    }
+    if (config.approvalMode === "exec" || config.approvalMode === "plugin") {
+      this.approvalMode = config.approvalMode;
     }
     this.runtimeConfig = config;
   }
@@ -354,32 +366,53 @@ export class AcpSessionManagerService {
     const description = this.buildPermissionDescription(req);
     const timeoutMs = this.approvalTimeoutMs;
     const gatewayTimeoutMs = timeoutMs + 10_000;
+    const mode = this.approvalMode;
+    log("handlePermissionRequest: approvalMode=" + mode);
 
     try {
-      const requestResult = await callGatewayTool<{
-        id?: string;
-        decision?: string | null;
-      }>(
-        "plugin.approval.request",
-        { timeoutMs: gatewayTimeoutMs },
-        {
-          pluginId: "acp-session-manager",
-          title: toolTitle.slice(0, 80),
-          description: description.slice(0, 256),
-          severity: "warning",
-          toolName,
-          agentId: session?.agentId,
-          sessionKey: parentSessionKey,
-          allowedDecisions: ["allow-once", "allow-always", "deny"],
-          timeoutMs,
-          twoPhase: true,
-        },
-        { expectFinal: false },
-      );
+      let requestResult: { id?: string; decision?: string | null } | undefined;
+
+      if (mode === "exec") {
+        // exec.approval.request is natively forwarded to the Control UI by the
+        // ACP translator's handleGatewayEvent (exec.approval.requested).
+        const commandText = description || toolTitle;
+        requestResult = await callGatewayTool<{ id?: string; decision?: string | null }>(
+          "exec.approval.request",
+          { timeoutMs: gatewayTimeoutMs },
+          {
+            command: commandText.slice(0, 4000),
+            host: "agent",
+            ask: "on",
+            agentId: session?.agentId,
+            sessionKey: parentSessionKey,
+            timeoutMs,
+            twoPhase: true,
+          },
+          { expectFinal: false },
+        );
+      } else {
+        requestResult = await callGatewayTool<{ id?: string; decision?: string | null }>(
+          "plugin.approval.request",
+          { timeoutMs: gatewayTimeoutMs },
+          {
+            pluginId: "acp-session-manager",
+            title: toolTitle.slice(0, 80),
+            description: description.slice(0, 256),
+            severity: "warning",
+            toolName,
+            agentId: session?.agentId,
+            sessionKey: parentSessionKey,
+            allowedDecisions: ["allow-once", "allow-always", "deny"],
+            timeoutMs,
+            twoPhase: true,
+          },
+          { expectFinal: false },
+        );
+      }
 
       const approvalId = requestResult?.id;
       if (!approvalId) {
-        logWarn("handlePermissionRequest: plugin.approval.request returned no id, rejecting");
+        logWarn("handlePermissionRequest: " + mode + ".approval.request returned no id, rejecting");
         return { outcome: "reject_once" };
       }
       log("handlePermissionRequest: approval created, id=" + approvalId);
@@ -388,7 +421,7 @@ export class AcpSessionManagerService {
       if (Object.hasOwn(requestResult ?? {}, "decision")) {
         decision = requestResult.decision;
       } else {
-        const waitResult = await this.waitForApprovalDecision(approvalId, gatewayTimeoutMs, ctx.signal);
+        const waitResult = await this.waitForApprovalDecision(mode, approvalId, gatewayTimeoutMs, ctx.signal);
         decision = waitResult?.decision;
       }
 
@@ -405,12 +438,14 @@ export class AcpSessionManagerService {
   }
 
   private async waitForApprovalDecision(
+    mode: "exec" | "plugin",
     approvalId: string,
     timeoutMs: number,
     signal?: AbortSignal,
   ): Promise<{ id?: string; decision?: string | null } | undefined> {
+    const method = mode === "exec" ? "exec.approval.waitDecision" : "plugin.approval.waitDecision";
     const waitPromise = callGatewayTool<{ id?: string; decision?: string | null }>(
-      "plugin.approval.waitDecision",
+      method,
       { timeoutMs },
       { id: approvalId },
     );
